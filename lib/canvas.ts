@@ -1,4 +1,22 @@
-import { fabric } from "fabric";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// lib/canvas.ts
+"use client"; // 强烈建议加在文件顶部（Next.js 客户端组件）
+
+import {
+  Canvas,
+  FabricObject,
+  TEvent,
+  TPointerEvent,
+  Point,
+  // 按需导入你实际用到的类（可以后续再加）
+  Rect,
+  Circle,
+  Triangle,
+  Line,
+  // Path, // 如果 freehand 路径需要特殊处理可导入
+} from "fabric";
+import * as fabric from "fabric";
+
 import { v4 as uuid4 } from "uuid";
 
 import {
@@ -11,33 +29,54 @@ import {
   CanvasSelectionCreated,
   RenderCanvas,
 } from "@/types/type";
+
 import { defaultNavElement } from "@/constants";
 import { createSpecificShape } from "./shapes";
 
-// initialize fabric canvas
+// 防抖函数
+const debounce = <T extends (...args: any[]) => void>(func: T, delay: number): ((...args: Parameters<T>) => void) => {
+  let timeoutId: NodeJS.Timeout;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => func(...args), delay);
+  };
+};
+
+// 全局防抖缓存
+const debouncedSyncCache = new Map<(shape: FabricObject) => void, (shape: FabricObject) => void>();
+
+// 获取或创建防抖版本的存储同步函数
+const getDebouncedSync = (syncShapeInStorage: (shape: FabricObject) => void, delay: number = 50) => {
+  if (!debouncedSyncCache.has(syncShapeInStorage)) {
+    debouncedSyncCache.set(syncShapeInStorage, debounce(syncShapeInStorage, delay));
+  }
+  return debouncedSyncCache.get(syncShapeInStorage)!;
+};
+
+// 初始化 fabric canvas
 export const initializeFabric = ({
   fabricRef,
   canvasRef,
 }: {
-  fabricRef: React.MutableRefObject<fabric.Canvas | null>;
-  canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
+  fabricRef: React.RefObject<Canvas | null>;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
 }) => {
-  // get canvas element
   const canvasElement = document.getElementById("canvas");
+  if (!canvasRef.current || !canvasElement) return null;
 
-  // create fabric canvas
-  const canvas = new fabric.Canvas(canvasRef.current, {
-    width: canvasElement?.clientWidth,
-    height: canvasElement?.clientHeight,
+  const canvas = new Canvas(canvasRef.current, {
+    width: canvasElement.clientWidth,
+    height: canvasElement.clientHeight,
+    // 可选：其他常用初始化配置
+    // preserveObjectStacking: true,
+    // selection: true,
   });
 
-  // set canvas reference to fabricRef so we can use it later anywhere outside canvas listener
   fabricRef.current = canvas;
-
   return canvas;
 };
 
-// instantiate creation of custom fabric object/shape and add it to canvas
+// 处理鼠标按下 - 创建形状或进入自由绘制模式
 export const handleCanvasMouseDown = ({
   options,
   canvas,
@@ -45,65 +84,47 @@ export const handleCanvasMouseDown = ({
   isDrawing,
   shapeRef,
 }: CanvasMouseDown) => {
-  // get pointer coordinates
-  const pointer = canvas.getPointer(options.e);
+  const pointer = { x: (options.e as PointerEvent).offsetX, y: (options.e as PointerEvent).offsetY };
 
-  /**
-   * get target object i.e., the object that is clicked
-   * findtarget() returns the object that is clicked
-   *
-   * findTarget: http://fabricjs.com/docs/fabric.Canvas.html#findTarget
-   */
-  const target = canvas.findTarget(options.e, false);
+  const target = canvas.findTarget(options.e as PointerEvent) as any;
 
-  // set canvas drawing mode to false
   canvas.isDrawingMode = false;
 
-  // if selected shape is freeform, set drawing mode to true and return
   if (selectedShapeRef.current === "freeform") {
     isDrawing.current = true;
     canvas.isDrawingMode = true;
-    canvas.freeDrawingBrush.width = 5;
+    if (canvas.freeDrawingBrush) {
+      canvas.freeDrawingBrush.width = 5;
+    }
     return;
   }
 
   canvas.isDrawingMode = false;
 
-  // if target is the selected shape or active selection, set isDrawing to false
   if (
     target &&
     (target.type === selectedShapeRef.current ||
       target.type === "activeSelection")
   ) {
     isDrawing.current = false;
-
-    // set active object to target
     canvas.setActiveObject(target);
-
-    /**
-     * setCoords() is used to update the controls of the object
-     * setCoords: http://fabricjs.com/docs/fabric.Object.html#setCoords
-     */
     target.setCoords();
   } else {
     isDrawing.current = true;
 
-    // create custom fabric object/shape and set it to shapeRef
     shapeRef.current = createSpecificShape(
       selectedShapeRef.current,
       pointer as any
     );
 
-    // if shapeRef is not null, add it to canvas
     if (shapeRef.current) {
-      // add: http://fabricjs.com/docs/fabric.Canvas.html#add
       canvas.add(shapeRef.current);
     }
   }
 };
 
-// handle mouse move event on canvas to draw shapes with different dimensions
-export const handleCanvaseMouseMove = ({
+// 鼠标移动 - 实时更新形状尺寸
+export const handleCanvasMouseMove = ({
   options,
   canvas,
   isDrawing,
@@ -111,66 +132,65 @@ export const handleCanvaseMouseMove = ({
   shapeRef,
   syncShapeInStorage,
 }: CanvasMouseMove) => {
-  // if selected shape is freeform, return
   if (!isDrawing.current) return;
   if (selectedShapeRef.current === "freeform") return;
 
   canvas.isDrawingMode = false;
 
-  // get pointer coordinates
-  const pointer = canvas.getPointer(options.e);
+  const pointer = { x: (options.e as PointerEvent).offsetX, y: (options.e as PointerEvent).offsetY };
 
-  // depending on the selected shape, set the dimensions of the shape stored in shapeRef in previous step of handelCanvasMouseDown
-  // calculate shape dimensions based on pointer coordinates
-  switch (selectedShapeRef?.current) {
+  if (!shapeRef.current) return;
+
+  switch (selectedShapeRef.current) {
     case "rectangle":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
+      shapeRef.current.set({
+        width: pointer.x - (shapeRef.current.left ?? 0),
+        height: pointer.y - (shapeRef.current.top ?? 0),
       });
       break;
 
     case "circle":
       shapeRef.current.set({
-        radius: Math.abs(pointer.x - (shapeRef.current?.left || 0)) / 2,
+        radius:
+          Math.abs(pointer.x - (shapeRef.current.left ?? 0)) / 2,
       });
       break;
 
     case "triangle":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
+      shapeRef.current.set({
+        width: pointer.x - (shapeRef.current.left ?? 0),
+        height: pointer.y - (shapeRef.current.top ?? 0),
       });
       break;
 
     case "line":
-      shapeRef.current?.set({
+      shapeRef.current.set({
         x2: pointer.x,
         y2: pointer.y,
       });
       break;
 
     case "image":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
+      shapeRef.current.set({
+        width: pointer.x - (shapeRef.current.left ?? 0),
+        height: pointer.y - (shapeRef.current.top ?? 0),
       });
+      break;
 
     default:
       break;
   }
 
-  // render objects on canvas
-  // renderAll: http://fabricjs.com/docs/fabric.Canvas.html#renderAll
-  canvas.renderAll();
+  canvas.requestRenderAll();
 
-  // sync shape in storage
+  // 使用防抖来减少存储更新频率
   if (shapeRef.current?.objectId) {
-    syncShapeInStorage(shapeRef.current);
+    const debouncedSync = getDebouncedSync(syncShapeInStorage, 50);
+    debouncedSync(shapeRef.current);
   }
 };
 
-// handle mouse up event on canvas to stop drawing shapes
+// 鼠标抬起 - 结束绘制
 export const handleCanvasMouseUp = ({
   canvas,
   isDrawing,
@@ -183,15 +203,14 @@ export const handleCanvasMouseUp = ({
   isDrawing.current = false;
   if (selectedShapeRef.current === "freeform") return;
 
-  // sync shape in storage as drawing is stopped
-  syncShapeInStorage(shapeRef.current);
+  if (shapeRef.current) {
+    syncShapeInStorage(shapeRef.current);
+  }
 
-  // set everything to null
   shapeRef.current = null;
   activeObjectRef.current = null;
   selectedShapeRef.current = null;
 
-  // if canvas is not in drawing mode, set active element to default nav element after 700ms
   if (!canvas.isDrawingMode) {
     setTimeout(() => {
       setActiveElement(defaultNavElement);
@@ -199,223 +218,212 @@ export const handleCanvasMouseUp = ({
   }
 };
 
-// update shape in storage when object is modified
+// 对象被修改（移动、旋转等）
 export const handleCanvasObjectModified = ({
   options,
   syncShapeInStorage,
 }: CanvasObjectModified) => {
-  const target = options.target;
+  const target = (options as any).target as FabricObject | null;
   if (!target) return;
 
-  if (target?.type == "activeSelection") {
-    // fix this
+  if (target.type === "activeSelection") {
+    // 如果是多选，遍历处理每个子对象
+    const selectedObjects = (target as any).getObjects();
+    selectedObjects?.forEach((obj: FabricObject) => {
+      syncShapeInStorage(obj);
+    });
   } else {
     syncShapeInStorage(target);
   }
 };
 
-// update shape in storage when path is created when in freeform mode
+// 自由绘制路径创建完成
 export const handlePathCreated = ({
   options,
   syncShapeInStorage,
 }: CanvasPathCreated) => {
-  // get path object
-  const path = options.path;
+  const path = options.path as FabricObject;
   if (!path) return;
 
-  // set unique id to path object
   path.set({
     objectId: uuid4(),
   });
 
-  // sync shape in storage
   syncShapeInStorage(path);
 };
 
-// check how object is moving on canvas and restrict it to canvas boundaries
+// 限制对象不移出画布边界
 export const handleCanvasObjectMoving = ({
   options,
 }: {
-  options: fabric.IEvent;
+  options: TEvent;
 }) => {
-  // get target object which is moving
-  const target = options.target as fabric.Object;
+  const target = (options as any).target as FabricObject | null;
+  if (!target || !target.canvas) return;
 
-  // target.canvas is the canvas on which the object is moving
-  const canvas = target.canvas as fabric.Canvas;
+  const canvas = target.canvas as Canvas;
 
-  // set coordinates of target object
   target.setCoords();
 
-  // restrict object to canvas boundaries (horizontal)
-  if (target && target.left) {
-    target.left = Math.max(
-      0,
-      Math.min(
-        target.left,
-        (canvas.width || 0) - (target.getScaledWidth() || target.width || 0)
-      )
-    );
+  const width = target.getScaledWidth() ?? target.width ?? 0;
+  const height = target.getScaledHeight() ?? target.height ?? 0;
+
+  if (target.left != null) {
+    target.left = Math.max(0, Math.min(target.left, (canvas.width ?? 0) - width));
   }
 
-  // restrict object to canvas boundaries (vertical)
-  if (target && target.top) {
-    target.top = Math.max(
-      0,
-      Math.min(
-        target.top,
-        (canvas.height || 0) - (target.getScaledHeight() || target.height || 0)
-      )
-    );
+  if (target.top != null) {
+    target.top = Math.max(0, Math.min(target.top, (canvas.height ?? 0) - height));
   }
 };
 
-// set element attributes when element is selected
+// 选中对象时更新属性面板
 export const handleCanvasSelectionCreated = ({
   options,
   isEditingRef,
   setElementAttributes,
 }: CanvasSelectionCreated) => {
-  // if user is editing manually, return
-  if (isEditingRef.current) return;
+  // 移除 isEditingRef 检查，确保选中时总是更新属性
+  if (!(options as any)?.selected?.length) return;
 
-  // if no element is selected, return
-  if (!options?.selected) return;
+  const selected = (options as any).selected[0] as FabricObject;
 
-  // get the selected element
-  const selectedElement = options?.selected[0] as fabric.Object;
+  if ((options as any).selected.length === 1 && selected) {
+    const scaledWidth = selected.scaleX
+      ? (selected.width ?? 0) * selected.scaleX
+      : selected.width;
 
-  // if only one element is selected, set element attributes
-  if (selectedElement && options.selected.length === 1) {
-    // calculate scaled dimensions of the object
-    const scaledWidth = selectedElement?.scaleX
-      ? selectedElement?.width! * selectedElement?.scaleX
-      : selectedElement?.width;
-
-    const scaledHeight = selectedElement?.scaleY
-      ? selectedElement?.height! * selectedElement?.scaleY
-      : selectedElement?.height;
+    const scaledHeight = selected.scaleY
+      ? (selected.height ?? 0) * selected.scaleY
+      : selected.height;
 
     setElementAttributes({
-      width: scaledWidth?.toFixed(0).toString() || "",
-      height: scaledHeight?.toFixed(0).toString() || "",
-      fill: selectedElement?.fill?.toString() || "",
-      stroke: selectedElement?.stroke || "",
-      // @ts-ignore
-      fontSize: selectedElement?.fontSize || "",
-      // @ts-ignore
-      fontFamily: selectedElement?.fontFamily || "",
-      // @ts-ignore
-      fontWeight: selectedElement?.fontWeight || "",
+      width: scaledWidth?.toFixed(0) ?? "",
+      height: scaledHeight?.toFixed(0) ?? "",
+      fill: (selected.fill as string) ?? "",
+      stroke: (selected.stroke as string) ?? "",
+      fontSize: (selected as any).fontSize ?? "",
+      fontFamily: (selected as any).fontFamily ?? "",
+      fontWeight: (selected as any).fontWeight ?? "",
     });
   }
 };
 
-// update element attributes when element is scaled
+// 对象缩放时更新属性
 export const handleCanvasObjectScaling = ({
   options,
   setElementAttributes,
 }: CanvasObjectScaling) => {
-  const selectedElement = options.target;
+  const target = (options as any).target as FabricObject | null;
+  if (!target) return;
 
-  // calculate scaled dimensions of the object
-  const scaledWidth = selectedElement?.scaleX
-    ? selectedElement?.width! * selectedElement?.scaleX
-    : selectedElement?.width;
+  const scaledWidth = target.scaleX
+    ? (target.width ?? 0) * target.scaleX
+    : target.width;
 
-  const scaledHeight = selectedElement?.scaleY
-    ? selectedElement?.height! * selectedElement?.scaleY
-    : selectedElement?.height;
+  const scaledHeight = target.scaleY
+    ? (target.height ?? 0) * target.scaleY
+    : target.height;
 
   setElementAttributes((prev) => ({
     ...prev,
-    width: scaledWidth?.toFixed(0).toString() || "",
-    height: scaledHeight?.toFixed(0).toString() || "",
+    width: scaledWidth?.toFixed(0) ?? "",
+    height: scaledHeight?.toFixed(0) ?? "",
   }));
 };
 
-// render canvas objects coming from storage on canvas
-export const renderCanvas = ({
+// 从存储数据渲染画布
+export const renderCanvas = async ({
   fabricRef,
   canvasObjects,
   activeObjectRef,
 }: RenderCanvas) => {
-  // clear canvas
-  fabricRef.current?.clear();
+  if (!fabricRef.current) return;
 
-  // render all objects on canvas
-  Array.from(canvasObjects, ([objectId, objectData]) => {
-    /**
-     * enlivenObjects() is used to render objects on canvas.
-     * It takes two arguments:
-     * 1. objectData: object data to render on canvas
-     * 2. callback: callback function to execute after rendering objects
-     * on canvas
-     *
-     * enlivenObjects: http://fabricjs.com/docs/fabric.util.html#.enlivenObjectEnlivables
-     */
-    fabric.util.enlivenObjects(
-      [objectData],
-      (enlivenedObjects: fabric.Object[]) => {
-        enlivenedObjects.forEach((enlivenedObj) => {
-          // if element is active, keep it in active state so that it can be edited further
-          if (activeObjectRef.current?.objectId === objectId) {
-            fabricRef.current?.setActiveObject(enlivenedObj);
-          }
+  const canvas = fabricRef.current;
+  
+  // 获取当前画布上的选中状态
+  const currentActiveObject = canvas.getActiveObject();
+  
+  // 如果有活跃对象（正在操作中），暂时不重新渲染
+  if (currentActiveObject) {
+    return;
+  }
+  
+  
+  const currentObjectCount = canvas.getObjects().length;//本地画布上的对象数量
+  const storageObjectCount = canvasObjects.size;//liveblocks的canvasObjects对象数量
+  //如果本地画布上的对象数量和liveblocks的canvasObjects对象数量相同，并且liveblocks的canvasObjects对象数量为0，则跳过重渲染
+  if (currentObjectCount === storageObjectCount && storageObjectCount === 0) {
+    return; // 都是空的，无需重渲染
+  }
+  
+  canvas.clear();  // 先清空
 
-          // add object to canvas
-          fabricRef.current?.add(enlivenedObj);
-        });
-      },
-      /**
-       * specify namespace of the object for fabric to render it on canvas
-       * A namespace is a string that is used to identify the type of
-       * object.
-       *
-       * Fabric Namespace: http://fabricjs.com/docs/fabric.html
-       */
-      "fabric"
-    );
-  });
+  const objectDataArray = Array.from(canvasObjects.values());
+  
+  if (objectDataArray.length === 0) {
+    canvas.requestRenderAll();
+    return;
+  }
 
-  fabricRef.current?.renderAll();
+  try {
+    // 现代 Fabric 用法：返回 Promise
+    const enlivenedObjects = await fabric.util.enlivenObjects(objectDataArray);
+
+    const activeId = activeObjectRef.current?.objectId;
+
+    enlivenedObjects.forEach((obj: any) => {
+      if (obj) {  // 防止 null/undefined
+        canvas.add(obj);
+
+        if (obj.objectId === activeId) {
+          canvas.setActiveObject(obj);
+          activeObjectRef.current = obj;  // 更新 ref，防止下次丢失选中
+        }
+      }
+    });
+
+    canvas.requestRenderAll();
+  } catch (error) {
+    console.error("enlivenObjects 失败:", error);
+    // 可选：这里可以加一个 fallback，比如 canvas.loadFromJSON(...)
+    canvas.requestRenderAll();
+  }
 };
 
-// resize canvas dimensions on window resize
-export const handleResize = ({ canvas }: { canvas: fabric.Canvas | null }) => {
+// 窗口大小变化时调整画布
+export const handleResize = ({ fabricRef }: { fabricRef: React.MutableRefObject<Canvas | null> }) => {
   const canvasElement = document.getElementById("canvas");
-  if (!canvasElement) return;
+  if (!canvasElement || !fabricRef.current) return;
 
-  if (!canvas) return;
-
-  canvas.setDimensions({
+  fabricRef.current.setDimensions({
     width: canvasElement.clientWidth,
     height: canvasElement.clientHeight,
   });
 };
 
-// zoom canvas on mouse scroll
+// 滚轮缩放（注意：v6 中 zoomToPoint 用法不变，但建议加边界控制）
 export const handleCanvasZoom = ({
   options,
   canvas,
 }: {
-  options: fabric.IEvent & { e: WheelEvent };
-  canvas: fabric.Canvas;
+  options: TEvent & { e: WheelEvent };
+  canvas: Canvas;
 }) => {
-  const delta = options.e?.deltaY;
+  const delta = options.e.deltaY;
   let zoom = canvas.getZoom();
 
-  // allow zooming to min 20% and max 100%
   const minZoom = 0.2;
-  const maxZoom = 1;
+  const maxZoom = 2.0; // 可以适当放宽上限
   const zoomStep = 0.001;
 
-  // calculate zoom based on mouse scroll wheel with min and max zoom
   zoom = Math.min(Math.max(minZoom, zoom + delta * zoomStep), maxZoom);
 
-  // set zoom to canvas
-  // zoomToPoint: http://fabricjs.com/docs/fabric.Canvas.html#zoomToPoint
-  canvas.zoomToPoint({ x: options.e.offsetX, y: options.e.offsetY }, zoom);
+  canvas.zoomToPoint(
+    new Point(options.e.offsetX, options.e.offsetY),
+    zoom
+  );
 
   options.e.preventDefault();
   options.e.stopPropagation();

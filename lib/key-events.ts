@@ -1,14 +1,20 @@
-import { fabric } from "fabric";
+import * as fabric from "fabric";
 import { v4 as uuidv4 } from "uuid";
 
 import { CustomFabricObject } from "@/types/type";
 
+/**
+ * 处理复制操作
+ * @param canvas - Fabric.js 画布对象
+ * @returns 被复制的活动对象数组
+ */
 export const handleCopy = (canvas: fabric.Canvas) => {
+  // 获取当前选中的所有对象
   const activeObjects = canvas.getActiveObjects();
   if (activeObjects.length > 0) {
-    // Serialize the selected objects
+    // 将选中的对象序列化为 JSON 格式
     const serializedObjects = activeObjects.map((obj) => obj.toObject());
-    // Store the serialized objects in the clipboard
+    // 将序列化后的对象存储到浏览器的 localStorage 中作为剪贴板
     localStorage.setItem("clipboard", JSON.stringify(serializedObjects));
   }
 
@@ -30,27 +36,38 @@ export const handlePaste = (
   if (clipboardData) {
     try {
       const parsedObjects = JSON.parse(clipboardData);
-      parsedObjects.forEach((objData: fabric.Object) => {
-        // convert the plain javascript objects retrieved from localStorage into fabricjs objects (deserialization)
-        fabric.util.enlivenObjects(
-          [objData],
-          (enlivenedObjects: fabric.Object[]) => {
-            enlivenedObjects.forEach((enlivenedObj) => {
-              // Offset the pasted objects to avoid overlap with existing objects
-              enlivenedObj.set({
-                left: enlivenedObj.left || 0 + 20,
-                top: enlivenedObj.top || 0 + 20,
-                objectId: uuidv4(),
-                fill: "#aabbcc",
-              } as CustomFabricObject<any>);
+      
+      // 一次性处理所有对象
+      // @ts-expect-error - Fabric.js v7 API change
+      fabric.util.enlivenObjects(parsedObjects).then((enlivenedObjects: fabric.Object[]) => {
+        enlivenedObjects.forEach((enlivenedObj) => {
+          // Offset the pasted objects to avoid overlap with existing objects
+          enlivenedObj.set({
+            left: (enlivenedObj.left || 0) + 100,
+            top: (enlivenedObj.top || 0) + 100,
+            objectId: uuidv4(),
+            fill: "#aabbcc",
+          } as CustomFabricObject<fabric.Object>);
 
-              canvas.add(enlivenedObj);
-              syncShapeInStorage(enlivenedObj);
+          canvas.add(enlivenedObj);
+          syncShapeInStorage(enlivenedObj);
+        });
+        
+        // 选中所有粘贴的对象
+        if (enlivenedObjects.length > 0) {
+          if (enlivenedObjects.length === 1) {
+            canvas.setActiveObject(enlivenedObjects[0]);
+          } else {
+            // 创建一个选择组来包含所有粘贴的对象
+            const selection = new fabric.ActiveSelection(enlivenedObjects, {
+              canvas: canvas,
             });
-            canvas.renderAll();
-          },
-          "fabric"
-        );
+            canvas.setActiveObject(selection);
+          }
+        }
+        
+        // 只渲染一次
+        canvas.requestRenderAll();
       });
     } catch (error) {
       console.error("Error parsing clipboard data:", error);
@@ -66,7 +83,7 @@ export const handleDelete = (
   if (!activeObjects || activeObjects.length === 0) return;
 
   if (activeObjects.length > 0) {
-    activeObjects.forEach((obj: CustomFabricObject<any>) => {
+    activeObjects.forEach((obj: CustomFabricObject<fabric.Object>) => {
       if (!obj.objectId) return;
       canvas.remove(obj);
       deleteShapeFromStorage(obj.objectId);
@@ -87,44 +104,44 @@ export const handleKeyDown = ({
   deleteShapeFromStorage,
 }: {
   e: KeyboardEvent;
-  canvas: fabric.Canvas | any;
+  canvas: fabric.Canvas;
   undo: () => void;
   redo: () => void;
   syncShapeInStorage: (shape: fabric.Object) => void;
   deleteShapeFromStorage: (id: string) => void;
 }) => {
   // Check if the key pressed is ctrl/cmd + c (copy)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 67) {
+  if ((e?.ctrlKey || e?.metaKey) && e.key === 'c') {
     handleCopy(canvas);
   }
 
   // Check if the key pressed is ctrl/cmd + v (paste)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 86) {
+  if ((e?.ctrlKey || e?.metaKey) && e.key === 'v') {
     handlePaste(canvas, syncShapeInStorage);
   }
 
   // Check if the key pressed is delete/backspace (delete)
-  // if (e.keyCode === 8 || e.keyCode === 46) {
-  //   handleDelete(canvas, deleteShapeFromStorage);
-  // }
+  if (e.key === 'Backspace' || e.key === 'Delete') {
+    handleDelete(canvas, deleteShapeFromStorage);
+  }
 
   // check if the key pressed is ctrl/cmd + x (cut)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 88) {
+  if ((e?.ctrlKey || e?.metaKey) && e.key === 'x') {
     handleCopy(canvas);
     handleDelete(canvas, deleteShapeFromStorage);
   }
 
   // check if the key pressed is ctrl/cmd + z (undo)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 90) {
+  if ((e?.ctrlKey || e?.metaKey) && e.key === 'z' && !e.shiftKey) {
     undo();
   }
 
-  // check if the key pressed is ctrl/cmd + y (redo)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 89) {
+  // check if the key pressed is ctrl/cmd + shift + z or ctrl/cmd + y (redo)
+  if ((e?.ctrlKey || e?.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
     redo();
   }
 
-  if (e.keyCode === 191 && !e.shiftKey) {
+  if (e.key === '/' && !e.shiftKey) {
     e.preventDefault();
   }
 };

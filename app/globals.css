@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@liveblocks/react-comments/styles.css";
+@import "@liveblocks/react-ui/styles.css";
 
 @theme {
   /* 推荐使用 --color- 前缀，这是 v4 官方命名空间 */
@@ -15,6 +15,7 @@
 @layer base {
   * {
     font-family: "Work Sans", sans-serif;
+    writing-mode: horizontal-tb;
   }
 
   body {

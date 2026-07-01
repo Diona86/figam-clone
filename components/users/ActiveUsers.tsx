@@ -7,7 +7,7 @@ const ActiveUsers = () => {
   const currentUser = useSelf();
   const hasMoreUsers = users.length > 3;
   const memoizedUsers=useMemo(()=>{return<div
-      className="flex items-center justify-center w-full gap-1 py-1 select-none"
+      className="flex items-center justify-center  gap-1 py-1 select-none"
     >
       <div className="flex pl-3 ">
         {currentUser && (
